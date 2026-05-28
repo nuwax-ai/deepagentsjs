@@ -187,8 +187,15 @@ OPTIONS:
   -v, --version             Show version
 
 ENVIRONMENT VARIABLES:
-  ANTHROPIC_API_KEY         API key for Anthropic models (required for Claude)
+  ANTHROPIC_API_KEY         API key for Anthropic models (auto-read by SDK)
+  ANTHROPIC_BASE_URL        Custom Anthropic-compatible API endpoint URL
+                            (e.g., http://localhost:3000 for one-api gateway)
+  ANTHROPIC_MODEL           Model name override (overrides --model flag)
   OPENAI_API_KEY            API key for OpenAI models
+  CUSTOM_LLM_BASE_URL       Custom OpenAI-compatible API endpoint URL
+                            (e.g., https://api.deepseek.com/v1)
+  CUSTOM_LLM_API_KEY        API key for custom LLM endpoint
+  CUSTOM_LLM_MODEL          Model name for custom LLM endpoint
   DEBUG                     Set to "true" to enable debug logging
   DEEPAGENTS_LOG_FILE       Path to log file (alternative to --log-file)
   WORKSPACE_ROOT            Alternative to --workspace flag
@@ -196,6 +203,12 @@ ENVIRONMENT VARIABLES:
 EXAMPLES:
   # Start with defaults
   npx deepagents-acp
+
+  # Custom Anthropic-compatible endpoint (e.g., one-api gateway)
+  ANTHROPIC_BASE_URL=http://localhost:3000 ANTHROPIC_API_KEY=sk-xxx ANTHROPIC_MODEL=claude-sonnet-4-5-20250929 npx deepagents-acp
+
+  # Custom OpenAI-compatible API (e.g., DeepSeek, GLM, Qwen)
+  CUSTOM_LLM_BASE_URL=https://api.deepseek.com/v1 CUSTOM_LLM_API_KEY=sk-xxx CUSTOM_LLM_MODEL=deepseek-chat npx deepagents-acp
 
   # Custom agent with skills
   npx deepagents-acp --name my-agent --skills ./skills,~/.deepagents/skills
@@ -294,6 +307,22 @@ async function main(): Promise<void> {
   log("Starting...");
   log("Agent:", options.name);
   log("Model:", options.model);
+  if (process.env.ANTHROPIC_BASE_URL) {
+    log(
+      "Custom Anthropic endpoint:",
+      process.env.ANTHROPIC_BASE_URL,
+      "| Model:",
+      process.env.ANTHROPIC_MODEL || options.model,
+    );
+  }
+  if (process.env.CUSTOM_LLM_BASE_URL) {
+    log(
+      "Custom OpenAI-compatible endpoint:",
+      process.env.CUSTOM_LLM_BASE_URL,
+      "| Model:",
+      process.env.CUSTOM_LLM_MODEL || options.model,
+    );
+  }
   log("Workspace:", workspaceRoot);
   log("Skills:", skills.join(", "));
   log("Memory:", memory.join(", "));

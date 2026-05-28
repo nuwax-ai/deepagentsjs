@@ -75,10 +75,47 @@ type SessionNotification = Record<string, unknown>;
 const DEFAULT_AUTH_METHODS: ACPAuthMethod[] = [
   {
     id: "anthropic",
-    name: "Anthropic API Key",
+    name: "Anthropic API (Official or Custom Endpoint)",
     type: "env_var",
-    vars: [{ name: "ANTHROPIC_API_KEY" }],
+    vars: [
+      { name: "ANTHROPIC_API_KEY" },
+      {
+        name: "ANTHROPIC_BASE_URL",
+        label: "Custom API Base URL",
+        secret: false,
+        optional: true,
+      },
+      {
+        name: "ANTHROPIC_MODEL",
+        label: "Model Name",
+        secret: false,
+        optional: true,
+      },
+    ],
     link: "https://console.anthropic.com/settings/keys",
+  },
+  {
+    id: "custom-openai",
+    name: "Custom OpenAI-Compatible LLM",
+    type: "env_var",
+    vars: [
+      {
+        name: "CUSTOM_LLM_BASE_URL",
+        label: "API Base URL",
+        secret: false,
+      },
+      {
+        name: "CUSTOM_LLM_API_KEY",
+        label: "API Key",
+        optional: true,
+      },
+      {
+        name: "CUSTOM_LLM_MODEL",
+        label: "Model Name",
+        secret: false,
+        optional: true,
+      },
+    ],
   },
   {
     id: "openai",
@@ -112,6 +149,84 @@ const DEFAULT_COMMANDS = [
 ];
 
 /**
+ * Create a custom Anthropic-compatible model from environment variables.
+ *
+ * When ANTHROPIC_BASE_URL is set, creates a ChatAnthropic instance pointed
+ * at the custom endpoint. Supports Anthropic-compatible API gateways
+ * (e.g., one-api, new-api, etc.).
+ *
+ * Environment variables:
+ *   ANTHROPIC_BASE_URL  — Custom API base URL (required to trigger custom mode)
+ *   ANTHROPIC_API_KEY   — API key (auto-read by Anthropic SDK)
+ *   ANTHROPIC_MODEL     — Model name (overrides --model CLI flag)
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function createCustomModelFromEnv(
+  fallbackModel?: string,
+): Promise<{ model: any; displayName: string } | null> {
+  const baseUrl = process.env.ANTHROPIC_BASE_URL;
+  if (!baseUrl || baseUrl.length === 0) {
+    return null;
+  }
+
+  const modelName =
+    process.env.ANTHROPIC_MODEL || fallbackModel || "claude-sonnet-4-5-20250929";
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+
+  // Dynamic import — langchain is a transitive dependency via deepagents
+  // @ts-expect-error — no type declarations for this subpath, but runtime import works
+  const { initChatModel } = await import("langchain/chat_models/universal");
+
+  const model = await initChatModel(modelName, {
+    modelProvider: "anthropic",
+    anthropicApiUrl: baseUrl,
+    ...(apiKey ? { anthropicApiKey: apiKey } : {}),
+  });
+
+  return { model, displayName: `${modelName} @ ${baseUrl}` };
+}
+
+/**
+ * When CUSTOM_LLM_BASE_URL is set, creates a ChatOpenAI instance pointed
+ * at the custom endpoint. Supports any OpenAI-compatible API
+ * (DeepSeek, GLM, Qwen, Moonshot, etc.).
+ *
+ * Environment variables:
+ *   CUSTOM_LLM_BASE_URL  — Custom API base URL (required to trigger)
+ *   CUSTOM_LLM_API_KEY   — API key (falls back to OPENAI_API_KEY)
+ *   CUSTOM_LLM_MODEL     — Model name (overrides --model CLI flag)
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function createOpenAICompatibleModelFromEnv(
+  fallbackModel?: string,
+): Promise<{ model: any; displayName: string } | null> {
+  const baseUrl = process.env.CUSTOM_LLM_BASE_URL;
+  if (!baseUrl || baseUrl.length === 0) {
+    return null;
+  }
+
+  const modelName =
+    process.env.CUSTOM_LLM_MODEL || fallbackModel || "gpt-4o";
+  const apiKey =
+    process.env.CUSTOM_LLM_API_KEY || process.env.OPENAI_API_KEY;
+
+  // Dynamic import — langchain is a transitive dependency via deepagents
+  // @ts-expect-error — no type declarations for this subpath, but runtime import works
+  const { initChatModel } = await import("langchain/chat_models/universal");
+
+  const model = await initChatModel(modelName, {
+    modelProvider: "openai",
+    ...(apiKey ? { apiKey } : {}),
+    configuration: { baseURL: baseUrl },
+  });
+
+  return {
+    model,
+    displayName: `${modelName} @ ${baseUrl} (OpenAI-compatible)`,
+  };
+}
+
+/**
  * DeepAgents ACP Server
  *
  * Wraps DeepAgents with the Agent Client Protocol, enabling communication
@@ -136,6 +251,7 @@ export class DeepAgentsServer {
   private connection: AgentSideConnection | null = null;
   private agents: Map<string, ReturnType<typeof createDeepAgent>> = new Map();
   private agentConfigs: Map<string, DeepAgentConfig> = new Map();
+  private modelDisplayNames: Map<string, string> = new Map();
   private sessions: Map<string, SessionState> = new Map();
   private checkpointer: MemorySaver;
   private clientCapabilities: ACPCapabilities = {};
@@ -461,7 +577,7 @@ export class DeepAgentsServer {
     this.sessions.set(sessionId, session);
 
     if (!this.agents.has(agentName)) {
-      this.createAgent(agentName);
+      await this.createAgent(agentName);
     }
 
     const acpBackend = this.acpBackends.get(agentName);
@@ -1058,10 +1174,15 @@ export class DeepAgentsServer {
       }
       case "status": {
         const config = this.agentConfigs.get(session.agentName);
+        const modelDisplay =
+          this.modelDisplayNames.get(session.agentName) ??
+          (typeof config?.model === "string"
+            ? config.model
+            : config?.model?.getName?.() ?? "default");
         const status = [
           `**Agent:** ${session.agentName}`,
           `**Mode:** ${session.mode ?? "agent"}`,
-          `**Model:** ${config?.model ?? "default"}`,
+          `**Model:** ${modelDisplay}`,
           `**Skills:** ${config?.skills?.length ?? 0} loaded`,
           `**Memory:** ${config?.memory?.length ?? 0} sources`,
           `**Session:** ${session.id}`,
@@ -1265,7 +1386,7 @@ export class DeepAgentsServer {
   /**
    * Create a DeepAgent instance for the given configuration
    */
-  private createAgent(agentName: string): void {
+  private async createAgent(agentName: string): Promise<void> {
     const config = this.agentConfigs.get(agentName);
 
     if (!config) {
@@ -1273,9 +1394,52 @@ export class DeepAgentsServer {
       throw new Error(`Agent configuration not found: ${agentName}`);
     }
 
+    // Create custom model from env vars if ANTHROPIC_BASE_URL is set
+    let effectiveModel = config.model;
+    if (typeof config.model !== "object" || config.model === null) {
+      try {
+        const custom = await createCustomModelFromEnv(
+          typeof config.model === "string" ? config.model : undefined,
+        );
+        if (custom) {
+          effectiveModel = custom.model;
+          this.modelDisplayNames.set(agentName, custom.displayName);
+          this.log("Using custom Anthropic endpoint:", custom.displayName);
+        }
+      } catch (err) {
+        throw new Error(
+          `ANTHROPIC_BASE_URL is set but model creation failed: ${(err as Error).message}. ` +
+            `Ensure @langchain/anthropic is installed: npm install @langchain/anthropic`,
+        );
+      }
+
+      // If Anthropic custom model was NOT created, try OpenAI-compatible
+      if (effectiveModel === config.model) {
+        try {
+          const custom = await createOpenAICompatibleModelFromEnv(
+            typeof config.model === "string" ? config.model : undefined,
+          );
+          if (custom) {
+            effectiveModel = custom.model;
+            this.modelDisplayNames.set(agentName, custom.displayName);
+            this.log(
+              "Using custom OpenAI-compatible endpoint:",
+              custom.displayName,
+            );
+          }
+        } catch (err) {
+          throw new Error(
+            `CUSTOM_LLM_BASE_URL is set but model creation failed: ${(err as Error).message}. ` +
+              `Ensure @langchain/openai is installed: npm install @langchain/openai`,
+          );
+        }
+      }
+    }
+
     this.log("Creating agent:", {
       name: agentName,
-      model: config.model ?? "default",
+      model:
+        this.modelDisplayNames.get(agentName) ?? effectiveModel ?? "default",
       skills: config.skills?.length ?? 0,
       memory: config.memory?.length ?? 0,
       tools: config.tools?.length ?? 0,
@@ -1286,7 +1450,7 @@ export class DeepAgentsServer {
     const backend = this.createBackend(config);
 
     const agent = createDeepAgent({
-      model: config.model,
+      model: effectiveModel,
       tools: config.tools,
       systemPrompt: config.systemPrompt,
       middleware: config.middleware,
