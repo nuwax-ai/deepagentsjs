@@ -59,3 +59,5 @@ agent-os
 sandbox-workspace/
 coverage
 workspace/
+/nuwax-dist/
+/.build.log
