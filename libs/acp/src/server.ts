@@ -17,7 +17,7 @@ import {
 
 import {
   createDeepAgent,
-  FilesystemBackend,
+  LocalShellBackend,
   type BackendProtocol,
   type BackendFactory,
 } from "deepagents";
@@ -1488,8 +1488,8 @@ export class DeepAgentsServer {
       return backend;
     }
 
-    this.log("Creating FilesystemBackend:", { rootDir: this.workspaceRoot });
-    return new FilesystemBackend({
+    this.log("Creating LocalShellBackend:", { rootDir: this.workspaceRoot });
+    return new LocalShellBackend({
       rootDir: this.workspaceRoot,
     });
   }
