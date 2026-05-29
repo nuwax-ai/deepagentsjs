@@ -173,12 +173,10 @@ async function createCustomModelFromEnv(
     process.env.ANTHROPIC_MODEL || fallbackModel || "claude-sonnet-4-5-20250929";
   const apiKey = process.env.ANTHROPIC_API_KEY;
 
-  // Dynamic import — langchain is a transitive dependency via deepagents
-  // @ts-expect-error — no type declarations for this subpath, but runtime import works
-  const { initChatModel } = await import("langchain/chat_models/universal");
+  const { ChatAnthropic } = await import("@langchain/anthropic");
 
-  const model = await initChatModel(modelName, {
-    modelProvider: "anthropic",
+  const model = new ChatAnthropic({
+    model: modelName,
     anthropicApiUrl: baseUrl,
     ...(apiKey ? { anthropicApiKey: apiKey } : {}),
   });
@@ -210,12 +208,10 @@ async function createOpenAICompatibleModelFromEnv(
   const apiKey =
     process.env.CUSTOM_LLM_API_KEY || process.env.OPENAI_API_KEY;
 
-  // Dynamic import — langchain is a transitive dependency via deepagents
-  // @ts-expect-error — no type declarations for this subpath, but runtime import works
-  const { initChatModel } = await import("langchain/chat_models/universal");
+  const { ChatOpenAI } = await import("@langchain/openai");
 
-  const model = await initChatModel(modelName, {
-    modelProvider: "openai",
+  const model = new ChatOpenAI({
+    model: modelName,
     ...(apiKey ? { apiKey } : {}),
     configuration: { baseURL: baseUrl },
   });
